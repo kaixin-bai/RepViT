@@ -87,7 +87,12 @@ class SamPredictor(torch.nn.Module):
         self.input_size = tuple(transformed_image.shape[-2:])
         #import pdb; pdb.set_trace()
         input_image = self.model.preprocess(transformed_image)
-        self.features = self.model.image_encoder(input_image)
+        try:
+            # 这里对repvit的多尺度特征图进行了提取
+            self.features, multiscale_feature_maps = self.model.image_encoder(input_image)
+        except:
+            # 如果不是repvit分支则进入以下分支
+            self.features = self.model.image_encoder(input_image)
         self.is_image_set = True
 
     def predict(

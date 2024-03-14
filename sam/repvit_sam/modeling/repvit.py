@@ -1,6 +1,5 @@
 import torch.nn as nn
 
-
 __all__ = ['repvit_m1']
 
 
@@ -23,9 +22,11 @@ def _make_divisible(v, divisor, min_value=None):
         new_v += divisor
     return new_v
 
+
 from timm.models.layers import SqueezeExcite
 
 import torch
+
 
 # From https://github.com/facebookresearch/detectron2/blob/main/detectron2/layers/batch_norm.py # noqa
 # Itself from https://github.com/facebookresearch/ConvNeXt/blob/d1fa8f6fef0a165b27399986cc2bdacc92777e40/models/convnext.py#L119  # noqa
@@ -42,7 +43,8 @@ class LayerNorm2d(nn.Module):
         x = (x - u) / torch.sqrt(s + self.eps)
         x = self.weight[:, None, None] * x + self.bias[:, None, None]
         return x
-    
+
+
 class Conv2d_BN(torch.nn.Sequential):
     def __init__(self, a, b, ks=1, stride=1, pad=0, dilation=1,
                  groups=1, bn_weight_init=1, resolution=-10000):
@@ -56,16 +58,18 @@ class Conv2d_BN(torch.nn.Sequential):
     @torch.no_grad()
     def fuse(self):
         c, bn = self._modules.values()
-        w = bn.weight / (bn.running_var + bn.eps)**0.5
+        w = bn.weight / (bn.running_var + bn.eps) ** 0.5
         w = c.weight * w[:, None, None, None]
         b = bn.bias - bn.running_mean * bn.weight / \
-            (bn.running_var + bn.eps)**0.5
+            (bn.running_var + bn.eps) ** 0.5
         m = torch.nn.Conv2d(w.size(1) * self.c.groups, w.size(
-            0), w.shape[2:], stride=self.c.stride, padding=self.c.padding, dilation=self.c.dilation, groups=self.c.groups,
-            device=c.weight.device)
+            0), w.shape[2:], stride=self.c.stride, padding=self.c.padding, dilation=self.c.dilation,
+                            groups=self.c.groups,
+                            device=c.weight.device)
         m.weight.data.copy_(w)
         m.bias.data.copy_(b)
         return m
+
 
 class Residual(torch.nn.Module):
     def __init__(self, m, drop=0.):
@@ -79,21 +83,21 @@ class Residual(torch.nn.Module):
                                               device=x.device).ge_(self.drop).div(1 - self.drop).detach()
         else:
             return x + self.m(x)
-    
+
     @torch.no_grad()
     def fuse(self):
         if isinstance(self.m, Conv2d_BN):
             m = self.m.fuse()
-            assert(m.groups == m.in_channels)
+            assert (m.groups == m.in_channels)
             identity = torch.ones(m.weight.shape[0], m.weight.shape[1], 1, 1)
-            identity = torch.nn.functional.pad(identity, [1,1,1,1])
+            identity = torch.nn.functional.pad(identity, [1, 1, 1, 1])
             m.weight += identity.to(m.weight.device)
             return m
         elif isinstance(self.m, torch.nn.Conv2d):
             m = self.m
-            assert(m.groups != m.in_channels)
+            assert (m.groups != m.in_channels)
             identity = torch.ones(m.weight.shape[0], m.weight.shape[1], 1, 1)
-            identity = torch.nn.functional.pad(identity, [1,1,1,1])
+            identity = torch.nn.functional.pad(identity, [1, 1, 1, 1])
             m.weight += identity.to(m.weight.device)
             return m
         else:
@@ -107,23 +111,24 @@ class RepVGGDW(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(ed, ed, 1, 1, 0, groups=ed)
         self.dim = ed
         self.bn = torch.nn.BatchNorm2d(ed)
-    
+
     def forward(self, x):
         return self.bn((self.conv(x) + self.conv1(x)) + x)
-    
+
     @torch.no_grad()
     def fuse(self):
         conv = self.conv.fuse()
         conv1 = self.conv1
-        
+
         conv_w = conv.weight
         conv_b = conv.bias
         conv1_w = conv1.weight
         conv1_b = conv1.bias
-        
-        conv1_w = torch.nn.functional.pad(conv1_w, [1,1,1,1])
 
-        identity = torch.nn.functional.pad(torch.ones(conv1_w.shape[0], conv1_w.shape[1], 1, 1, device=conv1_w.device), [1,1,1,1])
+        conv1_w = torch.nn.functional.pad(conv1_w, [1, 1, 1, 1])
+
+        identity = torch.nn.functional.pad(torch.ones(conv1_w.shape[0], conv1_w.shape[1], 1, 1, device=conv1_w.device),
+                                           [1, 1, 1, 1])
 
         final_conv_w = conv_w + conv1_w + identity
         final_conv_b = conv_b + conv1_b
@@ -132,10 +137,10 @@ class RepVGGDW(torch.nn.Module):
         conv.bias.data.copy_(final_conv_b)
 
         bn = self.bn
-        w = bn.weight / (bn.running_var + bn.eps)**0.5
+        w = bn.weight / (bn.running_var + bn.eps) ** 0.5
         w = conv.weight * w[:, None, None, None]
         b = bn.bias + (conv.bias - bn.running_mean) * bn.weight / \
-            (bn.running_var + bn.eps)**0.5
+            (bn.running_var + bn.eps) ** 0.5
         conv.weight.data.copy_(w)
         conv.bias.data.copy_(b)
         return conv
@@ -147,7 +152,7 @@ class RepViTBlock(nn.Module):
         assert stride in [1, 2]
 
         self.identity = stride == 1 and inp == oup
-        assert(hidden_dim == 2 * inp)
+        assert (hidden_dim == 2 * inp)
 
         if stride == 2:
             self.token_mixer = nn.Sequential(
@@ -156,12 +161,12 @@ class RepViTBlock(nn.Module):
                 Conv2d_BN(inp, oup, ks=1, stride=1, pad=0)
             )
             self.channel_mixer = Residual(nn.Sequential(
-                    # pw
-                    Conv2d_BN(oup, 2 * oup, 1, 1, 0),
-                    nn.GELU() if use_hs else nn.GELU(),
-                    # pw-linear
-                    Conv2d_BN(2 * oup, oup, 1, 1, 0, bn_weight_init=0),
-                ))
+                # pw
+                Conv2d_BN(oup, 2 * oup, 1, 1, 0),
+                nn.GELU() if use_hs else nn.GELU(),
+                # pw-linear
+                Conv2d_BN(2 * oup, oup, 1, 1, 0, bn_weight_init=0),
+            ))
         else:
             # assert(self.identity)
             self.token_mixer = nn.Sequential(
@@ -170,25 +175,28 @@ class RepViTBlock(nn.Module):
             )
             if self.identity:
                 self.channel_mixer = Residual(nn.Sequential(
-                        # pw
-                        Conv2d_BN(inp, hidden_dim, 1, 1, 0),
-                        nn.GELU() if use_hs else nn.GELU(),
-                        # pw-linear
-                        Conv2d_BN(hidden_dim, oup, 1, 1, 0, bn_weight_init=0),
-                    ))
+                    # pw
+                    Conv2d_BN(inp, hidden_dim, 1, 1, 0),
+                    nn.GELU() if use_hs else nn.GELU(),
+                    # pw-linear
+                    Conv2d_BN(hidden_dim, oup, 1, 1, 0, bn_weight_init=0),
+                ))
             else:
                 self.channel_mixer = nn.Sequential(
-                        # pw
-                        Conv2d_BN(inp, hidden_dim, 1, 1, 0),
-                        nn.GELU() if use_hs else nn.GELU(),
-                        # pw-linear
-                        Conv2d_BN(hidden_dim, oup, 1, 1, 0, bn_weight_init=0),
-                    )
+                    # pw
+                    Conv2d_BN(inp, hidden_dim, 1, 1, 0),
+                    nn.GELU() if use_hs else nn.GELU(),
+                    # pw-linear
+                    Conv2d_BN(hidden_dim, oup, 1, 1, 0, bn_weight_init=0),
+                )
 
     def forward(self, x):
         return self.channel_mixer(self.token_mixer(x))
 
+
 from timm.models.vision_transformer import trunc_normal_
+
+
 class BN_Linear(torch.nn.Sequential):
     def __init__(self, a, b, bias=True, std=0.02):
         super().__init__()
@@ -201,9 +209,9 @@ class BN_Linear(torch.nn.Sequential):
     @torch.no_grad()
     def fuse(self):
         bn, l = self._modules.values()
-        w = bn.weight / (bn.running_var + bn.eps)**0.5
+        w = bn.weight / (bn.running_var + bn.eps) ** 0.5
         b = bn.bias - self.bn.running_mean * \
-            self.bn.weight / (bn.running_var + bn.eps)**0.5
+            self.bn.weight / (bn.running_var + bn.eps) ** 0.5
         w = l.weight * w[None, :]
         if l.bias is None:
             b = b @ self.l.weight.T
@@ -213,6 +221,7 @@ class BN_Linear(torch.nn.Sequential):
         m.weight.data.copy_(w)
         m.bias.data.copy_(b)
         return m
+
 
 class Classfier(nn.Module):
     def __init__(self, dim, num_classes, distillation=True):
@@ -244,18 +253,19 @@ class Classfier(nn.Module):
         else:
             return classifier
 
+
 class RepViT(nn.Module):
     def __init__(self, cfgs, num_classes=1000, distillation=False, img_size=1024):
         super(RepViT, self).__init__()
         # setting of inverted residual blocks
         self.cfgs = cfgs
 
-        self.img_size = img_size
+        self.img_size = img_size  # 1024
 
         # building first layer
         input_channel = self.cfgs[0][2]
         patch_embed = torch.nn.Sequential(Conv2d_BN(3, input_channel // 2, 3, 2, 1), torch.nn.GELU(),
-                           Conv2d_BN(input_channel // 2, input_channel, 3, 2, 1))
+                                          Conv2d_BN(input_channel // 2, input_channel, 3, 2, 1))
         layers = [patch_embed]
         # building inverted residual blocks
         block = RepViTBlock
@@ -266,7 +276,7 @@ class RepViT(nn.Module):
             input_channel = output_channel
         self.features = nn.ModuleList(layers)
         # self.classifier = Classfier(output_channel, num_classes, distillation)
-        
+
         self.neck = nn.Sequential(
             nn.Conv2d(
                 output_channel,
@@ -285,80 +295,96 @@ class RepViT(nn.Module):
             LayerNorm2d(256),
         )
 
+    def save_checkpoint(self, file_path):
+        """
+        增加一个函数以单独保存出repvit在SAM上蒸馏后的参数
+        """
+        torch.save(self.state_dict(), file_path)
+
     def forward(self, x):
         # x = self.features(x)
-        for f in self.features:
+        feature_list = list()
+        for i, f in enumerate(self.features):
             x = f(x)
+            if i in [7, 15, 54]:
+                feature_list.append(x)
         # x = torch.nn.functional.adaptive_avg_pool2d(x, 1).flatten(1)
-        x = self.neck(x)
-        return x
+        x = self.neck(x)  # from [b,640,64,64] to [b,256,64,64]
+
+        # 将多尺度特征图进行提取
+        # 其中的特征图为：[[b,80,256,256],[b,160,128,128],[b,640,64,64],[b,256,64,64]]，即原图的1/4,1/8,1/16
+        feature_list.append(x)
+        return x, feature_list
+
 
 from timm.models import register_model
 
+
 @register_model
-def repvit(pretrained=False, num_classes = 1000, distillation=False, **kwargs):
+def repvit(pretrained=False, num_classes=1000, distillation=False, **kwargs):
     """
     Constructs a MobileNetV3-Large model
+    通过 create_model('repvit') 来构建RepViT
     """
     cfgs = [
-        # k, t, c, SE, HS, s 
-        [3,   2,  80, 1, 0, 1],
-        [3,   2,  80, 0, 0, 1],
-        [3,   2,  80, 1, 0, 1],
-        [3,   2,  80, 0, 0, 1],
-        [3,   2,  80, 1, 0, 1],
-        [3,   2,  80, 0, 0, 1],
-        [3,   2,  80, 0, 0, 1],
-        [3,   2,  160, 0, 0, 2],
-        [3,   2,  160, 1, 0, 1],
-        [3,   2,  160, 0, 0, 1],
-        [3,   2,  160, 1, 0, 1],
-        [3,   2,  160, 0, 0, 1],
-        [3,   2,  160, 1, 0, 1],
-        [3,   2,  160, 0, 0, 1],
-        [3,   2,  160, 0, 0, 1],
-        [3,   2,  320, 0, 1, 2],
-        [3,   2,  320, 1, 1, 1],
-        [3,   2,  320, 0, 1, 1],
-        [3,   2,  320, 1, 1, 1],
-        [3,   2,  320, 0, 1, 1],
-        [3,   2,  320, 1, 1, 1],
-        [3,   2,  320, 0, 1, 1],
-        [3,   2,  320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 1, 1, 1],
-        [3,   2, 320, 0, 1, 1],
+        # k, t,c, SE, HS,s
+        [3, 2, 80, 1, 0, 1],
+        [3, 2, 80, 0, 0, 1],
+        [3, 2, 80, 1, 0, 1],
+        [3, 2, 80, 0, 0, 1],
+        [3, 2, 80, 1, 0, 1],
+        [3, 2, 80, 0, 0, 1],
+        [3, 2, 80, 0, 0, 1],
+        [3, 2, 160, 0, 0, 2],
+        [3, 2, 160, 1, 0, 1],
+        [3, 2, 160, 0, 0, 1],
+        [3, 2, 160, 1, 0, 1],
+        [3, 2, 160, 0, 0, 1],
+        [3, 2, 160, 1, 0, 1],
+        [3, 2, 160, 0, 0, 1],
+        [3, 2, 160, 0, 0, 1],
+        [3, 2, 320, 0, 1, 2],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 320, 1, 1, 1],
+        [3, 2, 320, 0, 1, 1],
         # [3,   2, 320, 1, 1, 1],
         # [3,   2, 320, 0, 1, 1],
-        [3,   2, 320, 0, 1, 1],
-        [3,   2, 640, 0, 1, 2],
-        [3,   2, 640, 1, 1, 1],
-        [3,   2, 640, 0, 1, 1],
+        [3, 2, 320, 0, 1, 1],
+        [3, 2, 640, 0, 1, 2],
+        [3, 2, 640, 1, 1, 1],
+        [3, 2, 640, 0, 1, 1],
         # [3,   2, 640, 1, 1, 1],
         # [3,   2, 640, 0, 1, 1]
-    ]    
+    ]
     return RepViT(cfgs, num_classes=num_classes, distillation=distillation)

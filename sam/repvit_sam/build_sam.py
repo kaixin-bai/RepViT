@@ -79,6 +79,9 @@ def build_sam_repvit(checkpoint=None):
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
         repvit_sam.load_state_dict(state_dict)
+
+    #
+    repvit_sam.image_encoder.save_checkpoint("./sam_repvit.pth")
     return repvit_sam
 
 def build_sam_vit_t(checkpoint=None):
