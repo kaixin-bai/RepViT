@@ -162,3 +162,31 @@ If our code or models help your work, please cite our paper:
       primaryClass={cs.CV}
 }
 ```
+
+
+# NOTE
+## INSTALL
+```bash
+# 环境配置
+git clone https://github.com/kaixin-bai/RepViT.git
+conda create -n repvit python=3.8
+conda activate repvit
+conda install pytorch==1.12.1 torchvision==0.13.1 cudatoolkit=11.3 -c pytorch
+pip3 install timm==0.5.4 fvcore opencv-python
+cd RepViT/
+cd sam/
+pip install -e .
+
+# 下载权重
+mkdir weights && cd weights
+wget https://github.com/THU-MIG/RepViT/releases/download/v1.0/repvit_sam.pt
+
+# 测试网页
+cd ..
+pip3 install gradio
+python3 app/app.py 
+
+# 测试推理
+cd scripts
+python3 amg.py
+```
