@@ -6,12 +6,62 @@
 
 import cv2  # type: ignore
 
-from repvit_sam import SamAutomaticMaskGenerator, sam_model_registry
+import sys
+sys.path.append("../")
+from repvit_sam import SamAutomaticMaskGenerator, sam_model_registry, SamPredictor
 
 import argparse
 import json
 import os
 from typing import Any, Dict, List
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+"""
+参考mobilesam添加了其他prompt推理和mask可视化代码
+"""
+
+def show_mask(mask, ax, random_color=False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    else:
+        color = np.array([30 / 255, 144 / 255, 255 / 255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+
+
+def show_points(coords, labels, ax, marker_size=375):
+    pos_points = coords[labels == 1]
+    neg_points = coords[labels == 0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white',
+               linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white',
+               linewidth=1.25)
+
+def show_anns(anns):
+    if len(anns) == 0:
+        return
+    sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+
+    img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
+    img[:,:,3] = 0
+    for ann in sorted_anns:
+        m = ann['segmentation']
+        color_mask = np.concatenate([np.random.random(3), [0.35]])
+        img[m] = color_mask
+    ax.imshow(img)
+
+def show_box(box, ax):
+    x0, y0 = box[0], box[1]
+    w, h = box[2] - box[0], box[3] - box[1]
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0, 0, 0, 0), lw=2))
+
+
 
 parser = argparse.ArgumentParser(
     description=(
@@ -24,14 +74,16 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--input",
     type=str,
-    required=True,
+    # required=True,
+    default="/home/kb/MyProjects/RepViT/sam/notebooks/images/picture1.jpg",
     help="Path to either a single input image or folder of images.",
 )
 
 parser.add_argument(
     "--output",
     type=str,
-    required=True,
+    # required=True,
+    default="./",
     help=(
         "Path to the directory where masks will be output. Output will be either a folder "
         "of PNGs per image or a single json with COCO-style masks."
@@ -41,14 +93,16 @@ parser.add_argument(
 parser.add_argument(
     "--model-type",
     type=str,
-    required=True,
+    # required=True,
+    default="repvit",
     help="The type of model to load, in ['default', 'vit_h', 'vit_l', 'vit_b']",
 )
 
 parser.add_argument(
     "--checkpoint",
     type=str,
-    required=True,
+    # required=True,
+    default="/home/kb/MyProjects/RepViT/sam/weights/repvit_sam.pt",
     help="The path to the SAM checkpoint to use for mask generation.",
 )
 
@@ -218,18 +272,66 @@ def main(args: argparse.Namespace) -> None:
             continue
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+        # =============== 生成所有的mask ==============
+        # 这里的masks是一个list,list中每个元素是一个dict，字典的key是'segmentation'，value是一个bool的array
         masks = generator.generate(image)
+        plt.figure(figsize=(20, 20))
+        plt.imshow(image)
+        show_anns(masks)
+        plt.axis('off')
+        plt.show()
 
-        base = os.path.basename(t)
-        base = os.path.splitext(base)[0]
-        save_base = os.path.join(args.output, base)
-        if output_mode == "binary_mask":
-            os.makedirs(save_base, exist_ok=False)
-            write_masks_to_folder(masks, save_base)
-        else:
-            save_file = save_base + ".json"
-            with open(save_file, "w") as f:
-                json.dump(masks, f)
+        # base = os.path.basename(t)
+        # base = os.path.splitext(base)[0]
+        # save_base = os.path.join(args.output, base)
+        # if output_mode == "binary_mask":
+        #     os.makedirs(save_base, exist_ok=False)
+        #     write_masks_to_folder(masks, save_base)
+        # else:
+        #     save_file = save_base + ".json"
+        #     with open(save_file, "w") as f:
+        #         json.dump(masks, f)
+        # =====================================================
+
+
+        # =============== 以point prompt生成mask ==============
+        # input_point = np.array([[400, 400]])
+        input_point = np.array([[350, 370]])
+        input_label = np.array([1])
+        predictor = SamPredictor(sam)
+        predictor.set_image(image)
+        masks, scores, logits = predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True,
+        )
+        for i, (mask, score) in enumerate(zip(masks, scores)):
+            plt.figure(figsize=(10, 10))
+            plt.imshow(image)
+            show_mask(mask, plt.gca())
+            show_points(input_point, input_label, plt.gca())
+            plt.title(f"Mask {i + 1}, Score: {score:.3f}", fontsize=18)
+            plt.axis('off')
+            plt.show()
+        # =====================================================
+
+
+        # ================= 以box prompt生成mask ===============
+        input_box = np.array([190, 70, 460, 280])
+        masks, _, _ = predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=input_box[None, :],
+            multimask_output=False,
+        )
+        plt.figure(figsize=(10, 10))
+        plt.imshow(image)
+        show_mask(masks[0], plt.gca())
+        show_box(input_box, plt.gca())
+        plt.axis('off')
+        plt.show()
+        # =====================================================
+
     print("Done!")
 
 
