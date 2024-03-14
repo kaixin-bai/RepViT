@@ -190,3 +190,8 @@ python3 app/app.py
 cd scripts
 python3 amg.py
 ```
+
+## 说明
+- 参考`predictor.py`文件中`SamPredictor`的`set_torch_image`，此文件中多尺度特征图可输出
+
+- 参考`repvit.py`文件中`RepViT`的推理，这里可以将多尺度特征图进行输出。注意最后1/16的图有两个，一个是进入neck之前的，一个是之后的
